@@ -1,12 +1,22 @@
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE RecordWildCards #-}
+
 module Lib
-    (getRarArchive
+    (getRarArchive,
+     RarArchive (..),
+     RarEntry (..),
+     RarMetadata (..),
+     ExtTime (..),
+     HostOS (..),
+     PackMethod (..)
     ) where
 
 -- import qualified Codec.Archive.Zip as Z
 import qualified Data.ByteString.Lazy as B
+import GHC.Generics
 import Data.Binary
 import Data.Binary.Get
-import Data.Bits ((.&.))
+import Data.Bits ((.&.), shiftR, shiftL)
 import System.FilePath
 import Control.Monad.Loops (whileM)
 import Data.Maybe (catMaybes)
@@ -14,6 +24,9 @@ import qualified Data.Text.Lazy as TL
 import qualified Data.Text.Lazy.Encoding as TL
 import Debug.Trace
 import Numeric (showHex)
+import Data.Aeson
+import Data.Time.Calendar (fromGregorian)
+import Data.Time.Clock (UTCTime (..))
 
 prettyPrint :: B.ByteString -> String
 prettyPrint = concat . map (flip showHex "") . B.unpack
@@ -23,32 +36,44 @@ prettyPrint = concat . map (flip showHex "") . B.unpack
 data RarArchive = RarArchive
   { rarEntries :: [RarEntry]
   , rarComment :: B.ByteString
-  } deriving (Show)
+  }
 
 data RarEntry = RarEntry
-  { entrySize :: Word32
-  , entryPackedSize :: Word32
-  , entryPath :: FilePath
-  , entryTimestamp :: Int
-  , entryOS :: HostOS
-  , entryCRC32 :: Word32
-  , entryPackMethod :: PackMethod
-  , entryComment :: B.ByteString
-  , entryAttributes :: Word32
+  { entryMetadata :: RarMetadata
   , entryPackedData :: B.ByteString
   }
 
-instance Show RarEntry where
-  show e = "RarEntry { "
-        ++ "size = " ++ (show $ entrySize e) ++ ", "
-        ++ "packedSize = " ++ (show $ entryPackedSize e) ++ ", "
-        ++ "path = " ++ (show $ entryPath e) ++ ", "
-        ++ "timestamp = " ++ (show $ entryTimestamp e) ++ ", "
-        ++ "OS = " ++ (show $ entryOS e) ++ ", "
-        ++ "CRC32 = " ++ (show $ entryCRC32 e) ++ ", "
-        ++ "packMethod = " ++ (show $ entryPackMethod e) ++ ", "
-        ++ "comment = " ++ (show $ entryComment e) ++ ", "
-        ++ "attributes = " ++ (show $ entryAttributes e) ++ " }"
+newtype RarComment = RarComment { getComment :: B.ByteString }
+
+instance ToJSON RarComment where
+  toJSON comment = toJSON $ prettyPrint $ getComment comment
+
+data RarMetadata = RarMetadata
+  { entrySize :: Word32
+  , entryPackedSize :: Word32
+  , entryPath :: FilePath
+  , entryTimestamp :: UTCTime
+  , entryExtendedTime :: ExtTime
+  , entryOS :: HostOS
+  , entryCRC32 :: Word32
+  , entryPackMethod :: PackMethod
+  , entryComment :: RarComment
+  , entryAttributes :: Word32
+  } deriving (Generic)
+
+instance ToJSON RarMetadata
+
+data ExtTime = ExtTime
+  { extMtime   :: Maybe Int
+  , extCtime   :: Maybe Int
+  , extAtime   :: Maybe Int
+  , extArctime :: Maybe Int
+  } deriving (Generic, Eq, Show)
+
+instance ToJSON ExtTime
+
+emptyExtTime :: ExtTime
+emptyExtTime = ExtTime Nothing Nothing Nothing Nothing
 
 data HostOS = MS_DOS
             | OS_2
@@ -56,7 +81,9 @@ data HostOS = MS_DOS
             | Unix
             | Mac_OS
             | BeOS
-            deriving (Eq, Show)
+            deriving (Generic, Eq, Show)
+
+instance ToJSON HostOS
 
 data PackMethod = Stored
                 | FastestCompression
@@ -64,7 +91,9 @@ data PackMethod = Stored
                 | NormalCompression
                 | GoodCompression
                 | BestCompression
-                deriving (Eq, Show)
+                deriving (Generic, Eq, Show)
+
+instance ToJSON PackMethod
 
 markerBlock :: B.ByteString
 markerBlock = B.pack [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00]
@@ -86,14 +115,14 @@ getRarArchive = do
   headFlags <- getWord16le
 
   headSize <- getWord16le
-  traceM $ "headsize: " ++ (show headSize)
+  -- traceM $ "headsize: " ++ (show headSize)
   skip 6 -- reserved bytes
 
-  traceM $ "commentsize: " ++ (show (fromIntegral (headSize - 13)))
+  -- traceM $ "commentsize: " ++ (show (fromIntegral (headSize - 13)))
   -- rest of header is the comment
   comment <- getLazyByteString $ fromIntegral (headSize - 13)
 
-  traceM $ "comment: " ++ (prettyPrint comment)
+  -- traceM $ "comment: " ++ (prettyPrint comment)
 
   maybeEntries <- whileM (not <$> isEmpty) $ label "reading entry" $ do
     entryCrc <- getWord16le -- TODO verify
@@ -130,7 +159,7 @@ getRarEntry headFlags headSize = do
     otherwise -> fail $ "unrecognized os" ++ (show b) -- probably should Maybe instead
 
   fileCrc <- getWord32le
-  ftime <- parseMsDosTime <$> getWord32le
+  ftime <- parseMsDosTime <$> getWord16le <*> getWord16le
 
   skip 1 -- rar version needed to extract file, don't care here
 
@@ -163,28 +192,86 @@ getRarEntry headFlags headSize = do
   -- then skip 8
   -- else return ()
 
-  -- TODO xtime, apparently undocumented in forensicswiki
-  -- extendedTime <- if (headFlags .&. 0x1000) /= 0
-  --   then getWord32le -- variable size?
-  --   else return 0
+  let extendedTimePresent = (headFlags .&. 0x1000) /= 0
+  pos <- bytesRead
+  extendedTime <- if extendedTimePresent
+    then getExtendedTime
+    else return emptyExtTime
+  newPos <- bytesRead
+  let xtimeReadBytes = fromIntegral (newPos - pos)
 
   -- read up to start of packedData
-  comment <- getLazyByteString $ fromIntegral (headSize - 32 - nameSize)
+  comment <- getLazyByteString $
+    ((fromIntegral headSize) - 32 - (fromIntegral nameSize) - xtimeReadBytes)
 
   packedData <- getLazyByteString $ fromIntegral packedSize
 
   return $ RarEntry
-    { entrySize = unpackedSize
-    , entryPackedSize = packedSize
-    , entryPath = fileName
-    , entryTimestamp = ftime
-    , entryOS = hostOs
-    , entryCRC32 = fileCrc
-    , entryPackMethod = packingMethod
-    , entryComment = comment
-    , entryAttributes = attributes
+    { entryMetadata = RarMetadata
+      { entrySize = unpackedSize
+      , entryPackedSize = packedSize
+      , entryPath = fileName
+      , entryTimestamp = ftime
+      , entryExtendedTime = extendedTime
+      , entryOS = hostOs
+      , entryCRC32 = fileCrc
+      , entryPackMethod = packingMethod
+      , entryComment = RarComment comment
+      , entryAttributes = attributes
+      }
     , entryPackedData = packedData
     }
 
-parseMsDosTime :: Word32 -> Int
-parseMsDosTime = fromIntegral -- TODO
+getExtendedTime :: Get ExtTime
+getExtendedTime = do
+  flags <- getWord16le
+
+  -- traceM $ "extflags: " ++ (show $ (flags `shiftR` 12) .&. 0x3)
+  mtime <- if ((flags `shiftR` 12) .&. 8) /= 0
+    then getVarInt $ (flags `shiftR` 12) .&. 0x3
+    else return Nothing
+  -- traceM $ "mtime: " ++ (show mtime)
+  ctime <- if ((flags `shiftR` 8) .&. 8) /= 0
+    then getVarInt $ (flags `shiftR` 8) .&. 0x3
+    else return Nothing
+  atime <- if ((flags `shiftR` 4) .&. 8) /= 0
+    then getVarInt $ (flags `shiftR` 4) .&. 0x3
+    else return Nothing
+  arctime <- if ((flags `shiftR` 0) .&. 8) /= 0
+    then getVarInt $ (flags `shiftR` 0) .&. 0x3
+    else return Nothing
+  return $ ExtTime mtime ctime atime arctime
+
+getVarInt :: Word16 -> Get (Maybe Int)
+getVarInt 1 = Just . fromIntegral <$> getWord8
+getVarInt 2 = Just . fromIntegral <$> getWord16le
+getVarInt 3 = Just . fromIntegral <$> getWord24le
+getVarInt _ = fail "can't do that"
+
+getWord24le :: Get Word32
+getWord24le = do
+  b1 <- getWord8
+  b2 <- getWord8
+  b3 <- getWord8
+  -- append extra 0 byte and read as Word32
+  -- probably could be more efficient some other way
+  return $ runGet getWord32le $ B.pack [b1, b2, b3, 0x00]
+
+-- copied from zip-archive
+--
+-- > TIME bit     0 - 4           5 - 10          11 - 15
+-- >      value   seconds*        minute          hour
+-- >              *stored in two-second increments
+-- > DATE bit     0 - 4           5 - 8           9 - 15
+-- >      value   day (1 - 31)    month (1 - 12)  years from 1980
+--
+parseMsDosTime :: Word16 -> Word16 -> UTCTime
+parseMsDosTime dosTime dosDate =
+  let seconds = fromIntegral $ 2 * (dosTime .&. 0O37)
+      minutes = fromIntegral $ (shiftR dosTime 5) .&. 0O77
+      hour    = fromIntegral $ shiftR dosTime 11
+      day     = fromIntegral $ dosDate .&. 0O37
+      month   = fromIntegral $ ((shiftR dosDate 5) .&. 0O17)
+      year    = fromIntegral $ 1980 + shiftR dosDate 9 -- dos epoch is 1980
+  in UTCTime (fromGregorian year month day)
+             (hour * 3600 + minutes * 60 + seconds)

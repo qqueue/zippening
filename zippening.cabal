@@ -23,7 +23,9 @@ library
     text,
     filepath,
     monad-loops,
-    zip-archive
+    zip-archive,
+    aeson,
+    time
   default-language:    Haskell2010
 
 executable zippening-exe
@@ -34,6 +36,7 @@ executable zippening-exe
                      , zippening
                      , binary
                      , bytestring
+                     , aeson
   default-language:    Haskell2010
 
 test-suite zippening-test
