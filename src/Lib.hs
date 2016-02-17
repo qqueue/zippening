@@ -1,5 +1,4 @@
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE RecordWildCards #-}
 
 module Lib
     (getRarArchive,
@@ -18,6 +17,7 @@ import Data.Binary
 import Data.Binary.Get
 import Data.Bits ((.&.), shiftR, shiftL)
 import System.FilePath
+import Control.Monad (when)
 import Control.Monad.Loops (whileM)
 import Data.Maybe (catMaybes)
 import qualified Data.Text.Lazy as TL
@@ -29,7 +29,7 @@ import Data.Time.Calendar (fromGregorian)
 import Data.Time.Clock (UTCTime (..))
 
 prettyPrint :: B.ByteString -> String
-prettyPrint = concat . map (flip showHex "") . B.unpack
+prettyPrint = concatMap (`showHex` "") . B.unpack
 
 -- http://www.forensicswiki.org/w/images/5/5b/RARFileStructure.txt
 
@@ -79,7 +79,7 @@ data HostOS = MS_DOS
             | OS_2
             | Windows
             | Unix
-            | Mac_OS
+            | MacOS
             | BeOS
             deriving (Generic, Eq, Show)
 
@@ -101,16 +101,12 @@ markerBlock = B.pack [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00]
 getRarArchive :: Get RarArchive
 getRarArchive = do
   signature <- getLazyByteString 7
-  if signature /= markerBlock
-  then fail "bad signature"
-  else return ()
+  when (signature /= markerBlock) $ fail "bad signature"
 
   headCrc <- getWord16le -- TODO verify
 
   headType <- getWord8
-  if headType /= 0x73
-  then fail "not head type!"
-  else return ()
+  when (headType /= 0x73) $ fail "not head type!"
 
   headFlags <- getWord16le
 
@@ -133,9 +129,9 @@ getRarArchive = do
       0x74      -> Just <$> getRarEntry entryFlags entrySize
       otherwise ->
         if (entryFlags .&. 0x8000) /= 0
-        then label ("skipping entry " ++ (show entryType)) $ do
+        then label ("skipping entry " ++ show entryType) $ do
           addSize <- getWord32le
-          skip $ ((fromIntegral entrySize) + (fromIntegral addSize) - 7)
+          skip $ fromIntegral entrySize + fromIntegral addSize - 7
           return Nothing
         else do
           skip $ fromIntegral (entrySize - 7) -- already read 7 bytes
@@ -154,9 +150,9 @@ getRarEntry headFlags headSize = do
     0x01 -> return OS_2
     0x02 -> return Windows
     0x03 -> return Unix
-    0x04 -> return Mac_OS
+    0x04 -> return MacOS
     0x05 -> return BeOS
-    otherwise -> fail $ "unrecognized os" ++ (show b) -- probably should Maybe instead
+    otherwise -> fail $ "unrecognized os" ++ show b -- probably should Maybe instead
 
   fileCrc <- getWord32le
   ftime <- parseMsDosTime <$> getWord16le <*> getWord16le
@@ -170,7 +166,7 @@ getRarEntry headFlags headSize = do
     0x33 -> return NormalCompression
     0x34 -> return GoodCompression
     0x35 -> return BestCompression
-    otherwise -> fail $ "unrecognized packing" ++ (show b)
+    otherwise -> fail $ "unrecognized packing" ++ show b
 
   nameSize <- getWord16le
   attributes <- getWord32le
@@ -202,11 +198,11 @@ getRarEntry headFlags headSize = do
 
   -- read up to start of packedData
   comment <- getLazyByteString $
-    ((fromIntegral headSize) - 32 - (fromIntegral nameSize) - xtimeReadBytes)
+    fromIntegral headSize - 32 - fromIntegral nameSize - xtimeReadBytes
 
   packedData <- getLazyByteString $ fromIntegral packedSize
 
-  return $ RarEntry
+  return RarEntry
     { entryMetadata = RarMetadata
       { entrySize = unpackedSize
       , entryPackedSize = packedSize
@@ -271,7 +267,7 @@ parseMsDosTime dosTime dosDate =
       minutes = fromIntegral $ (shiftR dosTime 5) .&. 0O77
       hour    = fromIntegral $ shiftR dosTime 11
       day     = fromIntegral $ dosDate .&. 0O37
-      month   = fromIntegral $ ((shiftR dosDate 5) .&. 0O17)
+      month   = fromIntegral $ (shiftR dosDate 5) .&. 0O17
       year    = fromIntegral $ 1980 + shiftR dosDate 9 -- dos epoch is 1980
   in UTCTime (fromGregorian year month day)
              (hour * 3600 + minutes * 60 + seconds)
