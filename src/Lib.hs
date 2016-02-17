@@ -1,32 +1,32 @@
 {-# LANGUAGE DeriveGeneric #-}
 
 module Lib
-    (getRarArchive,
-     RarArchive (..),
-     RarEntry (..),
-     RarMetadata (..),
-     ExtTime (..),
-     HostOS (..),
-     PackMethod (..)
+    ( getRarArchive
+    , RarArchive (..)
+    , RarEntry (..)
+    , RarMetadata (..)
+    , ExtTime (..)
+    , HostOS (..)
+    , PackMethod (..)
     ) where
 
 -- import qualified Codec.Archive.Zip as Z
-import qualified Data.ByteString.Lazy as B
-import GHC.Generics
-import Data.Binary
-import Data.Binary.Get
-import Data.Bits ((.&.), shiftR, shiftL)
-import System.FilePath
-import Control.Monad (when)
-import Control.Monad.Loops (whileM)
-import Data.Maybe (catMaybes)
-import qualified Data.Text.Lazy as TL
+import           Control.Monad           (when)
+import           Control.Monad.Loops     (whileM)
+import           Data.Aeson
+import           Data.Binary
+import           Data.Binary.Get
+import           Data.Bits               (shiftL, shiftR, (.&.))
+import qualified Data.ByteString.Lazy    as B
+import           Data.Maybe              (catMaybes)
+import qualified Data.Text.Lazy          as TL
 import qualified Data.Text.Lazy.Encoding as TL
-import Debug.Trace
-import Numeric (showHex)
-import Data.Aeson
-import Data.Time.Calendar (fromGregorian)
-import Data.Time.Clock (UTCTime (..))
+import           Data.Time.Calendar      (fromGregorian)
+import           Data.Time.Clock         (UTCTime (..))
+import           Debug.Trace
+import           GHC.Generics
+import           Numeric                 (showHex)
+import           System.FilePath
 
 prettyPrint :: B.ByteString -> String
 prettyPrint = concatMap (`showHex` "") . B.unpack
@@ -39,7 +39,7 @@ data RarArchive = RarArchive
   }
 
 data RarEntry = RarEntry
-  { entryMetadata :: RarMetadata
+  { entryMetadata   :: RarMetadata
   , entryPackedData :: B.ByteString
   }
 
@@ -49,16 +49,16 @@ instance ToJSON RarComment where
   toJSON comment = toJSON $ prettyPrint $ getComment comment
 
 data RarMetadata = RarMetadata
-  { entrySize :: Word32
-  , entryPackedSize :: Word32
-  , entryPath :: FilePath
-  , entryTimestamp :: UTCTime
+  { entrySize         :: Word32
+  , entryPackedSize   :: Word32
+  , entryPath         :: FilePath
+  , entryTimestamp    :: UTCTime
   , entryExtendedTime :: ExtTime
-  , entryOS :: HostOS
-  , entryCRC32 :: Word32
-  , entryPackMethod :: PackMethod
-  , entryComment :: RarComment
-  , entryAttributes :: Word32
+  , entryOS           :: HostOS
+  , entryCRC32        :: Word32
+  , entryPackMethod   :: PackMethod
+  , entryComment      :: RarComment
+  , entryAttributes   :: Word32
   } deriving (Generic)
 
 instance ToJSON RarMetadata
