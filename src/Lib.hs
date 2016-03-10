@@ -18,6 +18,7 @@ import Data.Binary
 import Data.Binary.Get
 import Data.Bits ((.&.), shiftR, shiftL)
 import System.FilePath
+import Control.Monad (unless)
 import Control.Monad.Loops (whileM)
 import Data.Maybe (catMaybes)
 import qualified Data.Text.Lazy as TL
@@ -101,16 +102,12 @@ markerBlock = B.pack [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00]
 getRarArchive :: Get RarArchive
 getRarArchive = do
   signature <- getLazyByteString 7
-  if signature /= markerBlock
-  then fail "bad signature"
-  else return ()
+  unless (signature == markerBlock) (fail "bad signature")
 
   headCrc <- getWord16le -- TODO verify
 
   headType <- getWord8
-  if headType /= 0x73
-  then fail "not head type!"
-  else return ()
+  unless (headType == 0x73) (fail "not head type!")
 
   headFlags <- getWord16le
 
