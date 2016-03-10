@@ -242,7 +242,8 @@ getVarInt :: Word16 -> Get (Maybe Int)
 getVarInt 1 = Just . fromIntegral <$> getWord8
 getVarInt 2 = Just . fromIntegral <$> getWord16le
 getVarInt 3 = Just . fromIntegral <$> getWord24le
-getVarInt _ = fail "can't do that"
+getVarInt 0 = return Nothing -- apparently 0 can be present
+getVarInt x = fail $ "can't do that on 0 " ++ show x
 
 getWord24le :: Get Word32
 getWord24le = do
